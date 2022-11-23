@@ -2,12 +2,19 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 
 dotenv.config();
 
 const app = express();
 app.use(express.json());
-app.use(cors());
+app.use(cookieParser());
+const corsConfig = {
+  origin: ['http://localhost:3000'],
+  credentials: true,
+};
+app.use(cors(corsConfig));
+app.options('*', cors(corsConfig));
 const PORT = 5000;
 
 const posts = [
@@ -21,27 +28,33 @@ const posts = [
   },
 ];
 
-app.get('/posts', authenticateToken, (req, res) => {
+app.get('/posts', authorization, (req, res) => {
   res.json(posts.filter((post) => post.username === req.user.name));
 });
 
 const ACCESS_TOKEN_SECRET = '' + process.env.ACCESS_TOKEN_SECRET;
 const REFRESH_TOKEN_SECRET = '' + process.env.REFRESH_TOKEN_SECRET;
-const refreshTokens = [];
+const tokens = [];
 
 app.post('/login', (req, res) => {
   const username = req.body.username;
   const user = { name: username };
-  const accessToken = generateAccessToken(user);
-  const refreshToken = jwt.sign(user, REFRESH_TOKEN_SECRET);
-  refreshTokens.push(refreshToken);
-  res.json({ accessToken, refreshToken });
+  const token = generateAccessToken(user);
+  tokens.push(token);
+  return res
+    .cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+    })
+    .status(200)
+    .setHeader('X-Powered-By', 'sefirek')
+    .json({ message: 'Logged in successfully 😊 👌' });
 });
 
 app.post('/token', (req, res) => {
   const refreshToken = req.body.token;
   if (!refreshToken) return res.sendStatus(401);
-  if (!refreshTokens.includes(refreshToken)) return res.sendStatus(403);
+  if (!tokens.includes(refreshToken)) return res.sendStatus(403);
   jwt.verify(refreshToken, REFRESH_TOKEN_SECRET, (err, user) => {
     if (err) return res.sendStatus(403);
     const accessToken = generateAccessToken({ name: user.name });
@@ -49,24 +62,29 @@ app.post('/token', (req, res) => {
   });
 });
 
-app.delete('/logout', (req, res) => {
-  refreshTokens.splice(refreshTokens.indexOf(req.body.token), 1);
-  res.sendStatus(204);
+app.post('/logout', authorization, (req, res) => {
+  return res
+    .clearCookie('token')
+    .status(200)
+    .json({ message: 'Successfully logged out 😏 🍀' });
 });
 
 app.listen(PORT);
 
-function authenticateToken(req, res, next) {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader.split(' ')[1];
-  if (!token) return res.sendStatus(401);
-  jwt.verify(token, ACCESS_TOKEN_SECRET, (err, user) => {
-    if (err) return res.sendStatus(401);
-    req.user = user;
-    next();
-  });
+function generateAccessToken(user) {
+  return jwt.sign(user, ACCESS_TOKEN_SECRET, { expiresIn: '30d' });
 }
 
-function generateAccessToken(user) {
-  return jwt.sign(user, ACCESS_TOKEN_SECRET, { expiresIn: '20s' });
+function authorization(req, res, next) {
+  const token = req.cookies.token;
+  if (!token) {
+    return res.sendStatus(403);
+  }
+  try {
+    const data = jwt.verify(token, ACCESS_TOKEN_SECRET);
+    req.user = data.user;
+    return next();
+  } catch {
+    return res.sendStatus(403);
+  }
 }
